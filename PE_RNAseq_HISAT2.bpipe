@@ -1,0 +1,93 @@
+// Alignment related variables
+GENOME_INDEX="/path/to/hisat2_index"
+ANNOTATION="path/to/gtf"
+SPLICE_SITES="path/to/known_splice_sites" 
+threads=N
+
+//path to adapter file for adapter type used in this experiment
+ADAPTERS = "path/to/adapters.fasta"
+//trimmomatic parameters
+LEADING = 25
+TRAILING = 25
+MINLEN = 30
+ILLUMINACLIP = "2:30:10"
+
+// Initial quality control with FastQC
+fastqc = {
+    doc "Run FASTQC to generate QC metrics for the reads"
+    transform('.fastq')  to('_fastqc.zip')  {
+        exec "fastqc $inputs.fastq"
+    }
+}
+
+// Perform adapter and quality trimming with trim_galore
+trim_PE = {
+   // trim paired-end reads using trimmomatic
+   doc "Trim poor quality reads and adapters"
+   
+   filter("trim","trim") {
+        exec """
+                trimmomatic PE $input1.fastq $input2.fastq
+                $output1 ${output1.prefix}.unpaired
+                $output2 ${output2.prefix}.unpaired
+		        ILLUMINACLIP:$ADAPTERS:$ILLUMINACLIP
+                LEADING:$LEADING TRAILING:$TRAILING MINLEN:$MINLEN
+        ""","trimmomatic"
+   }
+}
+
+// Run fastqc on trimmed reads
+fastqc_trim = {
+              doc "Run FASTQC to generate QC metrics for trimmed reads"
+              transform("*.trim.fastq") to ("*_trim.zip") 
+              {
+                  exec "fastqc $inputs.fastq" 
+                                   }
+}
+
+// Align trimmed reads with HISAT2
+@transform("sam")
+align_PE = {
+              
+                exec """
+                        hisat2 --sensitive -p $threads -x $GENOME_INDEX -1 $input1.trim.fastq -2 $input2.trim.fastq -S $output.sam --known-splicesite-infile $SPLICE_SITES
+                     """
+}
+
+// Convert sam to bam, sort and index
+sorted = {
+    transform("(.*).trim.sam") to ("(.*).trim.sorted.bam") {
+        exec """
+                samtools view -bS $input | samtools sort - > $output.bam
+             """
+    }
+    exec "samtools index $output.bam"
+}
+
+
+// Count reads mapping to features
+counts = {
+                   transform("(.*).trim.sorted.bam") to ("(.*).counts") {
+                    exec """
+                           featureCounts -p -a $ANNOTATION \
+                           -o $output.counts -s 2 -T $threads $input.trim.sorted.bam
+                         """
+                   }
+}
+
+
+// Run bamqc to check the qaulity of the alignments
+bamqc = {
+    doc "Rum qualimap bamqc on sorted bam files"
+    exec """
+        qualimap bamqc -bam $input.trim.sorted.bam
+    """
+}
+
+run {
+    "%.fastq" * [ fastqc ] +
+    "%_R*.fastq" * [ trim_PE ] + [fastqc_trim] + "%_R*trim.fastq" * [align_PE] + 
+    "%_R*trim.sam" * [sorted] + "%_R*trim.sorted.bam" * [counts, bamqc]
+}
+
+// Run pipeline: bpipe run PE_RNAseq.pipe *.fastq
