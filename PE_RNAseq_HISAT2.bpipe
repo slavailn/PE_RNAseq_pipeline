@@ -80,7 +80,7 @@ counts = {
 bamqc = {
     doc "Rum qualimap bamqc on sorted bam files"
     exec """
-        qualimap bamqc -bam $input.trim.sorted.bam
+        qualimap bamqc -bam $input.trim.sorted.bam --java-mem-size=4G
     """
 }
 
